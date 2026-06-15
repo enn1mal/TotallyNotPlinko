@@ -1,0 +1,307 @@
+-- Totally Not Plinko | Rayfield UI (Kaucja Hub Edition)
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- Safe Remote Events retrieval
+local RebirthEvent = ReplicatedStorage:WaitForChild("BrainrotPlinkoRebirth", 5)
+local DropEvent    = ReplicatedStorage:WaitForChild("BrainrotPlinkoDrop", 5)
+
+if not RebirthEvent or not DropEvent then
+    warn("⚠️ [Totally Not Plinko]: Game remote events not found! The game might have updated.")
+end
+
+-- ===================== CONFIG =====================
+local config = {
+    rebirthTarget   = 10000,
+    rebirthCheck    = 0.5,
+    rebirthRunning  = false,
+    rebirthCount    = 0,
+    betRunning      = false,
+    betFired        = 0,
+}
+
+-- ===================== HELPERS =====================
+local function getCoinsAmount()
+    local coinsVal = player:FindFirstChild("CoinsAmount")
+    if coinsVal and coinsVal:IsA("NumberValue") then
+        return coinsVal.Value
+    end
+    return nil
+end
+
+-- Надежное чтение только множителя (x10000) без вывода кривых цен
+local function getRebirthButtonValue()
+    for _, obj in ipairs(playerGui:GetDescendants()) do
+        if obj.Name == "RebirthButton" and obj:IsA("GuiButton") then
+            if obj.Parent and obj.Parent.Name == "ConfirmPanel" then continue end
+
+            local raw = ""
+            local txt = obj:FindFirstChildWhichIsA("TextLabel")
+            if txt then raw = txt.Text else raw = obj.Text end
+
+            -- Вытаскиваем только цифры после X/x (например, из "REBIRTH x10000" получим 10000)
+            local afterX = raw:match("[xX]%s*(%d+)")
+            if afterX then return tonumber(afterX) end
+
+            local num = raw:gsub("[^%d]", "")
+            if num ~= "" then return tonumber(num) end
+        end
+    end
+    return nil
+end
+
+-- ===================== RAYFIELD UI INIT =====================
+local success, Rayfield = pcall(function()
+    return loadstring(game:HttpGet('https://raw.githubusercontent.com/shlexware/Rayfield/main/source'))()
+end)
+
+if not success or not Rayfield then
+    Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+end
+
+local Window = Rayfield:CreateWindow({
+    Name = "🎰 Totally Not Plinko",
+    LoadingTitle = "Totally Not Plinko",
+    LoadingSubtitle = "by Kaucja Hub",
+    ConfigurationSaving = { Enabled = false },
+    Discord = { Enabled = false },
+    KeySystem = false
+})
+
+-- Tabs
+local TabRebirth = Window:CreateTab("🔄 Auto Rebirth")
+local TabBet     = Window:CreateTab("💰 Auto Drop All")
+local TabCleaner = Window:CreateTab("🗺️ Map Cleaner")
+
+-- ===================== TAB: AUTO REBIRTH =====================
+local RebirthStatusParagraph = TabRebirth:CreateParagraph({
+    Title = "Status: Idle", 
+    Content = "Rebirths completed: 0"
+})
+
+TabRebirth:CreateInput({
+    Name = "Check interval (seconds):",
+    PlaceholderText = "0.5",
+    RemoveTextAfterFocusLost = false,
+    Callback = function(Text)
+        local num = tonumber(Text)
+        if num then config.rebirthCheck = math.max(0.1, num) end
+    end,
+})
+
+TabRebirth:CreateToggle({
+    Name = "Enable Auto Rebirth",
+    CurrentValue = false,
+    Flag = "RebirthToggle",
+    Callback = function(Value)
+        config.rebirthRunning = Value
+        
+        if Value then
+            if not RebirthEvent then
+                Rayfield:Notify({Title = "Error", Content = "Rebirth remote event missing!", Duration = 5})
+                return
+            end
+
+            Rayfield:Notify({
+                Title = "Auto Rebirth",
+                Content = "Script started. Waiting for x10000...",
+                Duration = 3
+            })
+            
+            task.spawn(function()
+                while config.rebirthRunning do
+                    local btnVal = getRebirthButtonValue()
+
+                    -- Скрипт молча проверяет значение в фоне. Никаких кривых цен на экран не выводится.
+                    if btnVal and btnVal >= config.rebirthTarget then
+                        RebirthStatusParagraph:Set({
+                            Title = "⚡ Executing Rebirth...",
+                            Content = string.format("Sending request to the server. Total Rebirths: %d", config.rebirthCount)
+                        })
+
+                        local ok, err = pcall(function()
+                            RebirthEvent:FireServer()
+                        end)
+
+                        if ok then
+                            config.rebirthCount = config.rebirthCount + 1
+                            Rayfield:Notify({
+                                Title = "Successful Rebirth!",
+                                Content = "Total rebirths: " .. tostring(config.rebirthCount),
+                                Duration = 2.5
+                            })
+                            task.wait(2.5)
+                        else
+                            RebirthStatusParagraph:Set({Title = "❌ Server Error", Content = tostring(err)})
+                            task.wait(1)
+                        end
+                    else
+                        -- Чистый статус без лишнего мусора
+                        RebirthStatusParagraph:Set({
+                            Title = "🟢 Script Running",
+                            Content = string.format("Waiting for x10000 button to become available... | Rebirths: %d", config.rebirthCount)
+                        })
+                    end
+                    task.wait(config.rebirthCheck)
+                end
+                RebirthStatusParagraph:Set({Title = "🛑 Script Stopped", Content = "Auto Rebirth is disabled."})
+            end)
+        end
+    end,
+})
+
+-- ===================== TAB: AUTO DROP ALL =====================
+local BetStatusParagraph = TabBet:CreateParagraph({
+    Title = "Status: Stopped", 
+    Content = "Coins: — | Total drops fired: 0"
+})
+
+TabBet:CreateToggle({
+    Name = "Enable Balanced Auto Drop (1 Drop/Sec)",
+    CurrentValue = false,
+    Flag = "BetToggle",
+    Callback = function(Value)
+        config.betRunning = Value
+        
+        if Value then
+            if not DropEvent then
+                Rayfield:Notify({Title = "Error", Content = "Drop remote event missing!", Duration = 5})
+                return
+            end
+
+            task.spawn(function()
+                while config.betRunning do
+                    local coins = getCoinsAmount()
+                    local betAmount = coins or 1e16
+
+                    local ok, err = pcall(function()
+                        DropEvent:FireServer(betAmount)
+                    end)
+
+                    if ok then
+                        config.betFired = config.betFired + 1
+                        if coins then
+                            BetStatusParagraph:Set({
+                                Title = "🔥 Dropping Balls",
+                                Content = string.format("Balance: %s | Drops Fired: %d (1 per second)", tostring(math.floor(coins)), config.betFired)
+                            })
+                        else
+                            BetStatusParagraph:Set({
+                                Title = "⚠️ Coins Missing (Defaulting to 1e16)",
+                                Content = string.format("Drops Fired: %d (1 per second)", config.betFired)
+                            })
+                        end
+                    else
+                        BetStatusParagraph:Set({
+                            Title = "❌ Remote Event Error",
+                            Content = tostring(err)
+                        })
+                    end
+
+                    task.wait(1)
+                end
+                BetStatusParagraph:Set({Title = "🛑 Script Stopped", Content = "Ball spawning stopped."})
+            end)
+        end
+    end,
+})
+
+-- ===================== TAB: MAP CLEANER =====================
+TabCleaner:CreateParagraph({
+    Title = "What does the cleaner do?", 
+    Content = "Removes Pegs, unnecessary BinPads, and RewardZones.\nResizes BinPad1 and RewardZone1 to 300 studs so balls hit the target perfectly."
+})
+
+local CleanerStatusParagraph = TabCleaner:CreateParagraph({
+    Title = "Cleaner Status", 
+    Content = "Awaiting execution..."
+})
+
+TabCleaner:CreateButton({
+    Name = "🧹 Clean & Expand Map",
+    Callback = function()
+        CleanerStatusParagraph:Set({Title = "⏳ Cleaning...", Content = "Please wait..."})
+        
+        local workspace = game:GetService("Workspace")
+        local removed  = 0
+        local modified = 0
+        local errors   = 0
+
+        local function processDescendants(root)
+            local objects = root:GetDescendants()
+            for _, obj in ipairs(objects) do
+                if not obj or not obj.Parent then continue end
+                local name = obj.Name
+
+                if name:lower():find("bindivider") then
+                    local ok = pcall(function() obj:Destroy() end)
+                    if ok then removed = removed + 1 else errors = errors + 1 end
+
+                elseif name:lower():match("^binpad") and name:lower() ~= "binpad1" then
+                    local ok = pcall(function() obj:Destroy() end)
+                    if ok then removed = removed + 1 else errors = errors + 1 end
+
+                elseif name:lower() == "peg" then
+                    local ok = pcall(function() obj:Destroy() end)
+                    if ok then removed = removed + 1 else errors = errors + 1 end
+
+                elseif name:lower():match("^rewardzone") and name:lower() ~= "rewardzone1" then
+                    local ok = pcall(function() obj:Destroy() end)
+                    if ok then removed = removed + 1 else errors = errors + 1 end
+
+                elseif name:lower() == "binpad1" then
+                    local ok = pcall(function()
+                        if obj:IsA("BasePart") then
+                            obj.Size = Vector3.new(300, obj.Size.Y, obj.Size.Z)
+                        end
+                    end)
+                    if ok then modified = modified + 1 else errors = errors + 1 end
+
+                elseif name:lower() == "rewardzone1" then
+                    local ok = pcall(function()
+                        if obj:IsA("BasePart") then
+                            obj.Size = Vector3.new(300, obj.Size.Y, obj.Size.Z)
+                        end
+                    end)
+                    if ok then modified = modified + 1 else errors = errors + 1 end
+
+                elseif name:lower() == "droporigin" then
+                    local ok = pcall(function()
+                        if obj:IsA("BasePart") then
+                            local cf = obj.CFrame
+                            obj.CFrame = CFrame.new(cf.X, 35, cf.Z) * (cf - cf.Position)
+                        end
+                    end)
+                    if ok then modified = modified + 1 else errors = errors + 1 end
+                end
+            end
+        end
+
+        local ok, err = pcall(function()
+            processDescendants(workspace)
+        end)
+
+        if ok then
+            local resultText = string.format("Objects removed: %d\nModified: %d\nErrors: %d", removed, modified, errors)
+            CleanerStatusParagraph:Set({
+                Title = "✅ Map Cleaned Successfully!",
+                Content = resultText
+            })
+            Rayfield:Notify({
+                Title = "Map Cleaner",
+                Content = "Cleaning finished successfully!",
+                Duration = 3
+            })
+        else
+            CleanerStatusParagraph:Set({
+                Title = "❌ Critical Error",
+                Content = tostring(err)
+            })
+        end
+    end,
+})
+
+Rayfield:LoadConfiguration()
